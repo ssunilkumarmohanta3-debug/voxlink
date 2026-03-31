@@ -19,9 +19,46 @@ VoxLink is a production-grade social audio/video calling mobile app + admin pane
 - **Framework**: React Native Expo 54, expo-router 6
 - **Font**: Poppins (via @expo-google-fonts/poppins)
 - **Colors**: primary `#757396`, accent `#A00EE7`, bg `#FAFEFF`, coinGold `#FFA100`, online `#0BAF23`
-- **Navigation**: Two tab groups — `app/screens/user/` (users) and `app/screens/host/` (hosts)
-- **Auth**: Real API via `services/AuthService.ts` → `services/api.ts` → Cloudflare Workers
-- **API Client**: `services/api.ts` with `EXPO_PUBLIC_API_URL` env var (default: localhost:8080)
+- **Auth**: Real API via `services/api.ts` → Cloudflare Workers
+- **API Client**: `services/api.ts` with `EXPO_PUBLIC_API_URL` env var
+
+#### Folder Structure (Route Groups)
+```
+app/
+  _layout.tsx         ← Root layout (shared providers, Stack config)
+  index.tsx           ← Splash screen + auth redirect
+  +not-found.tsx
+  
+  (shared)/           ← Code shared between user & host (transparent URL prefix)
+    auth/
+      onboarding.tsx  → /auth/onboarding
+      role-select.tsx → /auth/role-select
+    call/             → /call/* (audio/video call screens, both use)
+    chat/             → /chat/* (chat detail, both use)
+    about.tsx, settings.tsx, notifications.tsx, ... (utility screens)
+  
+  (user)/             ← All USER-specific code (transparent URL prefix)
+    auth/
+      login.tsx       → /auth/login
+      register.tsx    → /auth/register
+      fill-profile.tsx, select-gender.tsx, forgot-password.tsx, etc.
+    screens/user/     → /screens/user (user tab navigator)
+    payment/          → /payment/*
+    profile/          → /profile/*
+    hosts/            → /hosts/* (browse & view host profiles)
+  
+  (host)/             ← All HOST-specific code (transparent URL prefix)
+    auth/
+      host-login.tsx        → /auth/host-login
+      host-register.tsx     → /auth/host-register  (Step 1)
+      host-profile-setup.tsx→ /auth/host-profile-setup (Step 2)
+      host-become.tsx       → /auth/host-become (Step 3)
+      host-kyc.tsx          → /auth/host-kyc (Step 4)
+      host-status.tsx       → /auth/host-status
+    screens/host/     → /screens/host (host tab navigator)
+    host/             → /host/* (dashboard, settings, withdraw)
+```
+**Key insight**: Route groups `()` don't change URLs. `/auth/login` works the same whether the file is at `auth/login.tsx` or `(user)/auth/login.tsx`. This makes future app splitting easy — just copy `(user)/` folder to a new Expo app.
 
 ### Backend (artifacts/api-server)
 - **Framework**: Hono.js on Cloudflare Workers
@@ -74,7 +111,66 @@ VoxLink is a production-grade social audio/video calling mobile app + admin pane
 
 ## D1 Database Schema
 
-Tables: `users`, `hosts`, `coin_plans`, `coin_transactions`, `call_sessions`, `chat_rooms`, `messages`, `ratings`, `withdrawal_requests`, `notifications`, `faqs`, `talk_topics`, `app_settings`
+Tables: `users`, `hosts`, `coin_plans`, `coin_transactions`, `call_sessions`, `chat_rooms`, `messages`, `ratings`, `withdrawal_requests`, `notifications`, `faqs`, `talk_topics`, `app_settings`, `host_applications`
+
+### host_applications table
+KYC verification applications. Fields: id, user_id, display_name, date_of_birth, gender, phone, bio, specialties, languages, experience, audio_rate, video_rate, aadhar_front_url, aadhar_back_url, verification_video_url, status (pending|under_review|approved|rejected), rejection_reason, reviewed_by, reviewed_at, submitted_at
+
+## Auth System (Session 4)
+
+### User Auth
+- `login.tsx` — Real API login (email/password) + Google button UI (coming soon) + Guest login (creates temp account via `/api/auth/guest-login`)
+- `register.tsx` — Real API registration with gender field
+- `AuthContext.tsx` — Now uses `StorageKeys.AUTH_TOKEN` + `StorageKeys.USER`, adds `loginWithToken(token, user)` method
+
+### Host Multi-Step KYC Registration
+1. `host-login.tsx` — Real API login; if role!=host → redirects to host-register
+2. `host-register.tsx` — Step 1: Create account (email+password) → calls `/api/auth/register`
+3. `host-profile-setup.tsx` — Step 2: DOB, gender, phone, display name
+4. `host-become.tsx` — Step 3: Specialties, languages, bio, audio/video rates
+5. `host-kyc.tsx` — Step 4: Upload Aadhar front+back photos + verification video via `/api/upload/media`
+6. `host-status.tsx` — Shows application status: pending/under_review/approved/rejected with timeline and rejection reason
+
+### API Routes Added
+- `POST /api/auth/guest-login` — creates temp guest account (50 coins)
+- `GET /api/host-app/status` — check own KYC application status
+- `POST /api/host-app/submit` — submit/update KYC application
+- `GET /api/admin/host-applications` — list all applications (filterable by status)
+- `GET /api/admin/host-applications/:id` — single application detail
+- `PATCH /api/admin/host-applications/:id/review` — approve or reject with reason
+
+### Admin Panel
+- New **KYC Applications** page (`HostApplications.tsx`) — list with status badges, review modal with document viewer, approve/reject with reason
+- Added to sidebar nav under OVERVIEW section
+- Image lightbox for Aadhar photo review
+- Video preview for verification video
+
+## New Features (Session 3)
+
+### 1. Host Level System
+- 5 levels: Newcomer 🌱, Rising ⭐, Expert 🔥, Pro 💎, Elite 👑
+- `hosts` table: `level` column (1-5)
+- Level badge shown on host profile screen
+- Admin can manually set level or auto-recalculate based on calls+rating
+
+### 2. Separate Audio/Video Call Rates
+- `hosts` table: `audio_coins_per_minute` and `video_coins_per_minute` columns
+- TalkNowSheet shows correct rate per call type
+- Backend uses type-specific rate for `max_seconds` and coin deduction
+- `call_sessions` table: `rate_per_minute` stores actual rate used
+
+### 3. Chat Unlock (Call-First Policy)
+- `hosts` table: `chat_unlock_policy = 'call_first'` (default for all hosts)
+- Chat button shows 🔒 if user hasn't called the host yet
+- Clicking locked chat shows Alert asking user to call first
+- API: `GET /api/hosts/:id/chat-status` returns `{ unlocked, reason }`
+- `POST /api/chat/rooms` returns 403 if chat locked
+- Chat auto-unlocks after any completed call with the host
+
+### 4. Real API Chat (No Mock Data)
+- ChatContext upgraded to use real `API.getChatRooms()` and `API.getMessages()`
+- `sendMessage` calls `API.sendMessage()` with optimistic UI update
+- chat/[id].tsx loads messages from real API on mount
 
 ### Key Business Rules
 - 1 coin = $0.01 USD

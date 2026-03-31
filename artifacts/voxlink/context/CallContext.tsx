@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useCallback, useRef } from "react";
 import { router } from "expo-router";
 import { API } from "@/services/api";
+import { useAuth } from "@/context/AuthContext";
 
 export type CallType = "audio" | "video";
 export type CallStatus = "idle" | "outgoing" | "incoming" | "active" | "ended";
@@ -41,6 +42,7 @@ interface CallContextValue {
 const CallContext = createContext<CallContextValue | null>(null);
 
 export function CallProvider({ children }: { children: React.ReactNode }) {
+  const { updateCoins } = useAuth();
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
   const activeCallRef = useRef<ActiveCall | null>(null);
 
@@ -62,17 +64,22 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
       isSpeakerOn: type === "video",
     };
     updateCall(call);
-    router.push(type === "audio" ? "/call/audio-call" : "/call/video-call");
 
     try {
       const res = await API.initiateCall(participant.id, type);
+      const sessionId = res.session_id;
       const updated: ActiveCall = {
         ...call,
-        sessionId: res.session_id,
+        sessionId,
         coinsPerMinute: res.host_coins_per_minute ?? coinsPerMinute,
         maxSeconds: res.max_seconds,
       };
       updateCall(updated);
+      // Auto-accept on backend (simulates host answering in demo mode)
+      // This marks the session as 'active' so coins are charged correctly
+      if (sessionId) {
+        try { await API.answerCall(sessionId, true); } catch {}
+      }
     } catch (e) {
       console.warn("initiateCall API error (demo mode):", e);
     }
@@ -81,15 +88,19 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
   const receiveCall = useCallback((participant: CallParticipant, type: CallType, callId: string) => {
     const call: ActiveCall = { callId, type, status: "incoming", participant, isMuted: false, isCameraOn: false, isSpeakerOn: false };
     updateCall(call);
-    router.push("/call/incoming");
+    router.push("/shared/call/incoming");
   }, []);
 
-  const acceptCall = useCallback(() => {
+  const acceptCall = useCallback(async () => {
     const curr = activeCallRef.current;
     if (!curr) return;
     const updated = { ...curr, status: "active" as CallStatus, startTime: Date.now() };
     updateCall(updated);
-    router.replace(curr.type === "audio" ? "/call/audio-call" : "/call/video-call");
+    // Mark session as active on backend so coins are charged
+    if (curr.sessionId) {
+      try { await API.answerCall(curr.sessionId, true); } catch {}
+    }
+    router.replace(curr.type === "audio" ? "/shared/call/audio-call" : "/shared/call/video-call");
   }, []);
 
   const declineCall = useCallback(() => {
@@ -102,14 +113,34 @@ export function CallProvider({ children }: { children: React.ReactNode }) {
     const duration = call?.startTime ? Math.floor((Date.now() - call.startTime) / 1000) : 0;
     updateCall(null);
 
+    let coinsSpent = Math.ceil(duration / 60) * (call?.coinsPerMinute ?? 5);
+
     if (call?.sessionId) {
-      try { await API.endCall(call.sessionId, duration); } catch (e) { console.warn("endCall API error:", e); }
+      try {
+        const res = await API.endCall(call.sessionId, duration);
+        if (res?.coins_charged != null) {
+          coinsSpent = res.coins_charged;
+          // Fetch fresh balance from backend and update AuthContext
+          try {
+            const bal = await API.getBalance();
+            if (bal?.coins != null) updateCoins(bal.coins);
+          } catch {}
+        }
+      } catch (e) { console.warn("endCall API error:", e); }
     }
 
     if (call) {
       router.replace({
-        pathname: "/call/summary",
-        params: { duration, type: call.type, participantName: call.participant.name, autoEnded: autoEnded ? "1" : "0" },
+        pathname: "/shared/call/summary",
+        params: {
+          duration: String(duration),
+          type: call.type,
+          participantName: call.participant.name,
+          participantId: call.participant.id,
+          sessionId: call.sessionId ?? "",
+          coinsSpent: String(coinsSpent),
+          autoEnded: autoEnded ? "1" : "0",
+        },
       });
     } else {
       router.back();

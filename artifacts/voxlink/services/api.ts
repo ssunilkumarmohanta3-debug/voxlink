@@ -37,9 +37,15 @@ export async function apiRequest<T>(
 export const API = {
   // Auth
   login: (email: string, password: string) =>
-    apiRequest<{ token: string; user: any }>('POST', '/api/auth/login', { email, password }, false),
-  register: (name: string, email: string, password: string, phone?: string) =>
-    apiRequest<{ token: string; user: any }>('POST', '/api/auth/register', { name, email, password, phone }, false),
+    apiRequest<{ token: string; user: any }>('POST', '/api/user/auth/login', { email, password }, false),
+  register: (name: string, email: string, password: string, gender?: string, phone?: string) =>
+    apiRequest<{ token: string; user: any }>('POST', '/api/user/auth/register', { name, email, password, gender, phone }, false),
+  guestLogin: () =>
+    apiRequest<{ token: string; user: any }>('POST', '/api/auth/guest-login', {}, false),
+
+  // Host KYC Application
+  getHostAppStatus: () => apiRequest<any>('GET', '/api/host-app/status'),
+  submitHostApp: (data: any) => apiRequest<any>('POST', '/api/host-app/submit', data),
   me: () => apiRequest<any>('GET', '/api/user/me'),
   updateProfile: (data: any) => apiRequest('PATCH', '/api/user/me', data),
   updateAvatar: async (formData: FormData) => {
@@ -49,6 +55,19 @@ export const API = {
       headers: { Authorization: `Bearer ${token}` },
       body: formData,
     });
+    return res.json();
+  },
+  uploadFile: async (formData: FormData): Promise<{ url: string; key: string }> => {
+    const token = await getToken();
+    const res = await fetch(`${BASE_URL}/api/upload/media`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: formData,
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any).error || 'Upload failed');
+    }
     return res.json();
   },
 
@@ -80,6 +99,8 @@ export const API = {
   // Calls
   initiateCall: (host_id: string, call_type: 'audio' | 'video') =>
     apiRequest<any>('POST', '/api/calls/initiate', { host_id, call_type }),
+  answerCall: (session_id: string, accepted: boolean) =>
+    apiRequest('POST', `/api/calls/${session_id}/answer`, { accepted }),
   endCall: (session_id: string, duration_seconds: number) =>
     apiRequest('POST', '/api/calls/end', { session_id, duration_seconds }),
   rateCall: (session_id: string, rating: number, comment?: string) =>
@@ -87,12 +108,20 @@ export const API = {
   getCallHistory: () => apiRequest<any[]>('GET', '/api/calls/history'),
 
   // Chat
-  getChatRooms: () => apiRequest<any[]>('GET', '/api/chat/rooms'),
-  createChatRoom: (host_id: string) => apiRequest<any>('POST', '/api/chat/rooms', { host_id }),
+  getChatRooms: () => apiRequest<any[]>('GET', '/api/shared/chat/rooms'),
+  createChatRoom: (host_id: string) => apiRequest<any>('POST', '/api/shared/chat/rooms', { host_id }),
   getMessages: (room_id: string, before?: number) =>
-    apiRequest<any[]>('GET', `/api/chat/rooms/${room_id}/messages${before ? `?before=${before}` : ''}`),
+    apiRequest<any[]>('GET', `/api/shared/chat/rooms/${room_id}/messages${before ? `?before=${before}` : ''}`),
   sendMessage: (room_id: string, content: string, media_url?: string, media_type?: string) =>
-    apiRequest('POST', `/api/chat/rooms/${room_id}/messages`, { content, media_url, media_type }),
+    apiRequest('POST', `/api/shared/chat/rooms/${room_id}/messages`, { content, media_url, media_type }),
+  getChatStatus: (host_id: string) =>
+    apiRequest<{ unlocked: boolean; reason: string }>('GET', `/api/hosts/${host_id}/chat-status`),
+
+  // Matchmaking
+  matchFind: (call_type: 'audio' | 'video') =>
+    apiRequest<{ matched: boolean; host?: any; message?: string }>('POST', '/api/match/find', { call_type }),
+  matchOnlineHosts: () =>
+    apiRequest<any[]>('GET', '/api/match/online-hosts'),
 
   // Talk topics (public)
   getTalkTopics: () => apiRequest<any[]>('GET', '/api/talk-topics', undefined, false),

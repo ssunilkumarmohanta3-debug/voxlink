@@ -4,13 +4,14 @@ import { useAuth } from '@/lib/auth';
 import {
   LayoutDashboard, Users, Mic2, Wallet, Coins, Settings, LogOut,
   Menu, X, ChevronRight, HelpCircle, Phone, Bell, Star,
-  Hash, ArrowRightLeft
+  Hash, ArrowRightLeft, Trophy, ShieldCheck
 } from 'lucide-react';
 
 const nav = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, section: 'main' },
   { href: '/users', label: 'Users', icon: Users, section: 'main' },
   { href: '/hosts', label: 'Hosts', icon: Mic2, section: 'main' },
+  { href: '/host-applications', label: 'KYC Applications', icon: ShieldCheck, section: 'main' },
   { href: '/calls', label: 'Call Sessions', icon: Phone, section: 'main' },
   { href: '/ratings', label: 'Ratings', icon: Star, section: 'main' },
   { href: '/withdrawals', label: 'Withdrawals', icon: Wallet, section: 'finance' },
@@ -19,6 +20,7 @@ const nav = [
   { href: '/notifications', label: 'Notifications', icon: Bell, section: 'content' },
   { href: '/talk-topics', label: 'Talk Topics', icon: Hash, section: 'content' },
   { href: '/faqs', label: 'FAQs', icon: HelpCircle, section: 'content' },
+  { href: '/level-config', label: 'Level System', icon: Trophy, section: 'system' },
   { href: '/settings', label: 'Settings', icon: Settings, section: 'system' },
 ];
 

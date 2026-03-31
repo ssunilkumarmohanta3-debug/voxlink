@@ -12,6 +12,8 @@ import callRouter from './routes/call';
 import adminRouter from './routes/admin';
 import uploadRouter from './routes/upload';
 import publicRouter from './routes/public';
+import matchRouter from './routes/match';
+import hostappRouter from './routes/hostapp';
 import { ChatRoom } from './durable-objects/ChatRoom';
 import { CallSignaling } from './durable-objects/CallSignaling';
 import { NotificationHub } from './durable-objects/NotificationHub';
@@ -38,6 +40,8 @@ app.route('/api/coins', coinRouter);
 app.route('/api/chat', chatRouter);
 app.route('/api/calls', callRouter);
 app.route('/api/admin', adminRouter);
+app.route('/api/match', matchRouter);
+app.route('/api/host-app', hostappRouter);
 app.route('/api/upload', uploadRouter);
 app.route('/api', publicRouter); // public: talk-topics, faqs, search, app-config (no auth — mount FIRST)
 app.route('/api', uploadRouter); // for /api/files/:key (auth required)

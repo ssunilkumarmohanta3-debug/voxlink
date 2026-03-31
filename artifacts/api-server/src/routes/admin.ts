@@ -116,14 +116,91 @@ admin.get('/hosts', async (c) => {
 // PATCH /api/admin/hosts/:id
 admin.patch('/hosts/:id', async (c) => {
   const { id } = c.req.param();
-  const { is_active, is_top_rated, identity_verified } = await c.req.json();
+  const body = await c.req.json();
+  const { is_active, is_top_rated, identity_verified, level, audio_coins_per_minute, video_coins_per_minute, coins_per_minute } = body;
   const sets: string[] = []; const vals: any[] = [];
   if (is_active !== undefined) { sets.push('is_active = ?'); vals.push(is_active); }
   if (is_top_rated !== undefined) { sets.push('is_top_rated = ?'); vals.push(is_top_rated); }
   if (identity_verified !== undefined) { sets.push('identity_verified = ?'); vals.push(identity_verified); }
+  if (level !== undefined) { sets.push('level = ?'); vals.push(Math.min(5, Math.max(1, parseInt(level)))); }
+  if (audio_coins_per_minute !== undefined) { sets.push('audio_coins_per_minute = ?'); vals.push(parseInt(audio_coins_per_minute)); }
+  if (video_coins_per_minute !== undefined) { sets.push('video_coins_per_minute = ?'); vals.push(parseInt(video_coins_per_minute)); }
+  if (coins_per_minute !== undefined) { sets.push('coins_per_minute = ?'); vals.push(parseInt(coins_per_minute)); }
+  if (!sets.length) return c.json({ error: 'Nothing to update' }, 400);
+  sets.push('updated_at = unixepoch()');
   vals.push(id);
   await db(c).prepare(`UPDATE hosts SET ${sets.join(', ')} WHERE id = ?`).bind(...vals).run();
   return c.json({ success: true });
+});
+
+// POST /api/admin/hosts/:id/level — manually set host level
+admin.post('/hosts/:id/level', async (c) => {
+  const { id } = c.req.param();
+  const { level } = await c.req.json<{ level: number }>();
+  const lvl = Math.min(5, Math.max(1, parseInt(String(level))));
+  await db(c).prepare('UPDATE hosts SET level = ?, updated_at = unixepoch() WHERE id = ?').bind(lvl, id).run();
+  return c.json({ success: true, level: lvl });
+});
+
+// DEFAULT level config (fallback if not set in DB)
+const DEFAULT_LEVEL_CONFIG = [
+  { level: 1, name: 'Newcomer', badge: '🌱', color: '#6B7280', min_calls: 0,    min_rating: 0.0, coin_reward: 0,    description: 'New to the platform' },
+  { level: 2, name: 'Rising',   badge: '⭐', color: '#F59E0B', min_calls: 50,   min_rating: 4.0, coin_reward: 100,  description: 'Getting established' },
+  { level: 3, name: 'Expert',   badge: '🔥', color: '#EF4444', min_calls: 200,  min_rating: 4.3, coin_reward: 300,  description: 'Proven expertise' },
+  { level: 4, name: 'Pro',      badge: '💎', color: '#8B5CF6', min_calls: 500,  min_rating: 4.6, coin_reward: 500,  description: 'Professional tier' },
+  { level: 5, name: 'Elite',    badge: '👑', color: '#D97706', min_calls: 1000, min_rating: 4.8, coin_reward: 1000, description: 'Top performer' },
+];
+
+async function getLevelConfig(d: D1Database): Promise<typeof DEFAULT_LEVEL_CONFIG> {
+  try {
+    const row = await d.prepare("SELECT value FROM app_settings WHERE key = 'level_config'").first<any>();
+    if (row?.value) return JSON.parse(row.value);
+  } catch (_) {}
+  return DEFAULT_LEVEL_CONFIG;
+}
+
+// GET /api/admin/level-config
+admin.get('/level-config', async (c) => {
+  const config = await getLevelConfig(db(c));
+  return c.json(config);
+});
+
+// PUT /api/admin/level-config
+admin.put('/level-config', async (c) => {
+  const body = await c.req.json<typeof DEFAULT_LEVEL_CONFIG>();
+  if (!Array.isArray(body) || body.length !== 5) return c.json({ error: 'Invalid config: must be array of 5 levels' }, 400);
+  const normalized = body.map((l, i) => ({
+    level: i + 1,
+    name: String(l.name || DEFAULT_LEVEL_CONFIG[i].name),
+    badge: String(l.badge || DEFAULT_LEVEL_CONFIG[i].badge),
+    color: String(l.color || DEFAULT_LEVEL_CONFIG[i].color),
+    min_calls: Math.max(0, parseInt(String(l.min_calls)) || 0),
+    min_rating: Math.min(5, Math.max(0, parseFloat(String(l.min_rating)) || 0)),
+    coin_reward: Math.max(0, parseInt(String(l.coin_reward)) || 0),
+    description: String(l.description || ''),
+  }));
+  await db(c).prepare("INSERT OR REPLACE INTO app_settings (key, value, updated_at) VALUES ('level_config', ?, unixepoch())")
+    .bind(JSON.stringify(normalized)).run();
+  return c.json({ success: true, config: normalized });
+});
+
+// POST /api/admin/hosts/recalculate-levels — auto-recalculate all host levels using DB config
+admin.post('/hosts/recalculate-levels', async (c) => {
+  const d = db(c);
+  const config = await getLevelConfig(d);
+  const sorted = [...config].sort((a, b) => b.level - a.level); // highest first
+  const stmts: D1PreparedStatement[] = [];
+  for (const lvl of sorted) {
+    if (lvl.level === 1) {
+      stmts.push(d.prepare("UPDATE hosts SET level = 1 WHERE level IS NULL OR level < 1"));
+    } else {
+      stmts.push(d.prepare(
+        `UPDATE hosts SET level = ? WHERE (level IS NULL OR level < ?) AND review_count >= ? AND rating >= ?`
+      ).bind(lvl.level, lvl.level, lvl.min_calls, lvl.min_rating));
+    }
+  }
+  await d.batch(stmts);
+  return c.json({ success: true, config });
 });
 
 // GET /api/admin/withdrawals
@@ -307,5 +384,82 @@ admin.delete('/faqs/:id', async (c) => {
   return c.json({ success: true });
 });
 
+// ─── Host KYC Applications ───────────────────────────────────────────────────
+
+// GET /api/admin/host-applications — list all applications
+admin.get('/host-applications', async (c) => {
+  const { status } = c.req.query();
+  let q = `SELECT ha.*, u.email, u.avatar_url FROM host_applications ha
+            JOIN users u ON u.id = ha.user_id`;
+  const params: any[] = [];
+  if (status) { q += ' WHERE ha.status = ?'; params.push(status); }
+  q += ' ORDER BY ha.submitted_at DESC';
+  const result = await db(c).prepare(q).bind(...params).all<any>();
+  return c.json(result.results.map(r => ({
+    ...r,
+    specialties: JSON.parse(r.specialties || '[]'),
+    languages: JSON.parse(r.languages || '[]'),
+  })));
+});
+
+// GET /api/admin/host-applications/:id — single application detail
+admin.get('/host-applications/:id', async (c) => {
+  const { id } = c.req.param();
+  const app = await db(c)
+    .prepare(`SELECT ha.*, u.email, u.name as user_name, u.avatar_url
+              FROM host_applications ha JOIN users u ON u.id = ha.user_id
+              WHERE ha.id = ?`)
+    .bind(id).first<any>();
+  if (!app) return c.json({ error: 'Not found' }, 404);
+  return c.json({
+    ...app,
+    specialties: JSON.parse(app.specialties || '[]'),
+    languages: JSON.parse(app.languages || '[]'),
+  });
+});
+
+// PATCH /api/admin/host-applications/:id/review — approve or reject
+admin.patch('/host-applications/:id/review', async (c) => {
+  const { id } = c.req.param();
+  const { action, rejection_reason } = await c.req.json<{ action: 'approve' | 'reject'; rejection_reason?: string }>();
+  const { sub } = c.get('user');
+  const d = db(c);
+
+  if (!['approve', 'reject'].includes(action)) {
+    return c.json({ error: 'action must be approve or reject' }, 400);
+  }
+
+  const app = await d.prepare('SELECT * FROM host_applications WHERE id = ?').bind(id).first<any>();
+  if (!app) return c.json({ error: 'Application not found' }, 404);
+
+  const newStatus = action === 'approve' ? 'approved' : 'rejected';
+  await d.prepare(
+    `UPDATE host_applications SET status=?, rejection_reason=?, reviewed_by=?, reviewed_at=unixepoch(), updated_at=unixepoch() WHERE id=?`
+  ).bind(newStatus, rejection_reason ?? null, sub, id).run();
+
+  if (action === 'approve') {
+    // Create host record + update user role
+    const hostId = `host_${app.user_id}`;
+    const existing = await d.prepare('SELECT id FROM hosts WHERE user_id = ?').bind(app.user_id).first();
+    if (!existing) {
+      await d.batch([
+        d.prepare(
+          `INSERT INTO hosts (id, user_id, display_name, specialties, languages, audio_coins_per_minute, video_coins_per_minute, is_active)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 1)`
+        ).bind(hostId, app.user_id, app.display_name, app.specialties, app.languages, app.audio_rate ?? 5, app.video_rate ?? 8),
+        d.prepare(`UPDATE users SET role='host', phone=COALESCE(phone,?), updated_at=unixepoch() WHERE id=?`)
+          .bind(app.phone ?? null, app.user_id),
+      ]);
+    } else {
+      await d.prepare(`UPDATE hosts SET display_name=?, specialties=?, is_active=1 WHERE user_id=?`)
+        .bind(app.display_name, app.specialties, app.user_id).run();
+      await d.prepare(`UPDATE users SET role='host', updated_at=unixepoch() WHERE id=?`).bind(app.user_id).run();
+    }
+  }
+
+  return c.json({ success: true, status: newStatus });
+});
+
 export default admin;
+
 
